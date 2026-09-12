@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useSyncExternalStore, useState } from "react";
 
 type PantryItem = {
   id: string;
@@ -10,28 +10,54 @@ type PantryItem = {
 };
 
 const STORAGE_KEY = "agecari-pantry";
+const CHANGE_EVENT = "agecari-pantry-change";
+
+const EMPTY: PantryItem[] = [];
+
+let snapshot: PantryItem[] | null = null;
+
+function getSnapshot(): PantryItem[] {
+  if (typeof window === "undefined") return EMPTY;
+  if (snapshot !== null) return snapshot;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    snapshot = raw ? (JSON.parse(raw) as PantryItem[]) : EMPTY;
+  } catch {
+    snapshot = EMPTY;
+  }
+  return snapshot;
+}
+
+function subscribe(onStoreChange: () => void): () => void {
+  function handleChange() {
+    snapshot = null;
+    onStoreChange();
+  }
+  window.addEventListener(CHANGE_EVENT, handleChange);
+  window.addEventListener("storage", handleChange);
+  return () => {
+    window.removeEventListener(CHANGE_EVENT, handleChange);
+    window.removeEventListener("storage", handleChange);
+  };
+}
+
+function writeItems(next: PantryItem[]) {
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  snapshot = next;
+  window.dispatchEvent(new Event(CHANGE_EVENT));
+}
 
 const UNIT_OPTIONS = ["item", "g", "kg", "ml", "l", "cup", "tbsp", "tsp"];
 
-function loadItems(): PantryItem[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as PantryItem[]) : [];
-  } catch {
-    return [];
-  }
-}
-
 export default function PantryInventory() {
-  const [items, setItems] = useState<PantryItem[]>(loadItems);
+  const items: PantryItem[] = useSyncExternalStore(
+    subscribe,
+    getSnapshot,
+    () => EMPTY,
+  );
   const [name, setName] = useState("");
   const [quantity, setQuantity] = useState("");
   const [unit, setUnit] = useState("item");
-
-  useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
-  }, [items]);
 
   function addItem(e: React.FormEvent) {
     e.preventDefault();
@@ -44,19 +70,19 @@ export default function PantryInventory() {
       quantity: Number.isFinite(qty) ? qty : 1,
       unit,
     };
-    setItems((prev) => [...prev, item]);
+    writeItems([...items, item]);
     setName("");
     setQuantity("");
     setUnit("item");
   }
 
   function removeItem(id: string) {
-    setItems((prev) => prev.filter((item) => item.id !== id));
+    writeItems(items.filter((item) => item.id !== id));
   }
 
   function changeQuantity(id: string, delta: number) {
-    setItems((prev) =>
-      prev.map((item) =>
+    writeItems(
+      items.map((item) =>
         item.id === id
           ? { ...item, quantity: Math.max(0, item.quantity + delta) }
           : item,
@@ -136,13 +162,19 @@ export default function PantryInventory() {
                 <span className="font-medium">{item.name}</span>
                 <span
                   className={`text-sm ${
-                    item.quantity < 2
-                      ? "text-amber-600 dark:text-amber-400"
-                      : "text-zinc-500 dark:text-zinc-400"
+                    item.quantity === 0
+                      ? "text-red-600 dark:text-red-400"
+                      : item.quantity < 2
+                        ? "text-amber-600 dark:text-amber-400"
+                        : "text-zinc-500 dark:text-zinc-400"
                   }`}
                 >
                   {item.quantity} {item.unit}
-                  {item.quantity < 2 && " · running low"}
+                  {item.quantity === 0
+                    ? " · empty"
+                    : item.quantity < 2
+                      ? " · running low"
+                      : ""}
                 </span>
               </div>
               <div className="flex items-center gap-2">
